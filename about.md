@@ -13,10 +13,10 @@
 ```bash
 pnpm install
 pnpm dev        # 本地开发，默认 http://localhost:5173
-pnpm build      # 构建静态站点到 .vitepress/dist
-pnpm preview    # 预览构建结果
+pnpm build
+pnpm preview
 ```
 
 ## 联系
 
-- GitHub：[@huolibo](https://github.com/huolibo)
+- Email：[@huolibo](huolibo@qq.com)
