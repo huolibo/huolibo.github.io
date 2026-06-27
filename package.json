@@ -1,0 +1,15 @@
+{
+  "name": "huolibo-github-io",
+  "version": "0.1.0",
+  "private": true,
+  "description": "huolibo 的个人知识库 —— 笔记、有趣的链接与收藏",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3"
+  }
+}

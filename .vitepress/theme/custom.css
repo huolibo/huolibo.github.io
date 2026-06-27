@@ -1,0 +1,29 @@
+/**
+ * 站点主题微调 —— 在 VitePress 默认主题基础上调整品牌色与首页渐变。
+ * 完整变量见：https://vitepress.dev/reference/default-theme-config
+ */
+
+:root {
+  --vp-c-brand-1: #3c8772;
+  --vp-c-brand-2: #418d77;
+  --vp-c-brand-3: #4a9d86;
+  --vp-c-brand-soft: rgba(60, 135, 114, 0.14);
+
+  /* 首页 hero 文字渐变 */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #3c8772 30%, #41b883);
+
+  /* 首页 hero 图标光晕 */
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    #3c8772 50%,
+    #41b883 50%
+  );
+  --vp-home-hero-image-filter: blur(44px);
+}
+
+.dark {
+  --vp-c-brand-1: #5bb89c;
+  --vp-c-brand-2: #4ea888;
+  --vp-c-brand-3: #3c8772;
+}
