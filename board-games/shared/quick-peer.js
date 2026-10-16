@@ -46,8 +46,9 @@ export class QuickPeerLink {
     });
     connection.on('close', () => { if (!this.closed) this.onStatus('disconnected'); });
     connection.on('error', () => { if (!this.closed) this.onStatus('failed'); });
-    this.pc?.addEventListener('connectionstatechange', () => {
-      if (!this.closed && ['disconnected', 'failed', 'closed'].includes(this.pc.connectionState)) this.onStatus(this.pc.connectionState);
+    const pc = this.pc;
+    pc?.addEventListener('connectionstatechange', () => {
+      if (!this.closed && ['disconnected', 'failed', 'closed'].includes(pc.connectionState)) this.onStatus(pc.connectionState);
     });
   }
   fail(message) {

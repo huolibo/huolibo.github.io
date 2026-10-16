@@ -71,6 +71,7 @@ for(const kind of ['xiangqi','gomoku']) {
 }
 test('rematch rejection, timeout and disconnect preserve result; stale quick link fails clearly',async({browser})=>{
   const a=await browser.newContext(),b=await browser.newContext(),host=await a.newPage(),guest=await b.newPage();
+  const errors=[];for(const page of [host,guest]) page.on('pageerror',error=>errors.push(error.message));
   const invite=await quickPair(host,guest,'gomoku');await resign(host);
   await expect(guest.locator('#result-panel')).toBeVisible();const id=(await saved(host,'gomoku')).game.id;
   await host.locator('#rematch-button').click();await expect(guest.locator('#rematch-panel')).toBeVisible();
@@ -83,7 +84,7 @@ test('rematch rejection, timeout and disconnect preserve result; stale quick lin
   expect((await saved(host,'gomoku')).game.id).toBe(id);
   const third=await b.newPage();await localBroker(third);await third.goto(invite);
   await expect(third.locator('#connect-status')).toContainText('快捷配对暂不可用',{timeout:10000});
-  await expect(third.locator('#mode-label')).toContainText('待连接');await a.close();await b.close();
+  await expect(third.locator('#mode-label')).toContainText('待连接');expect(errors).toEqual([]);await a.close();await b.close();
 });
 test('quick service failure leaves the offline pairing controls available',async({page})=>{
   await page.addInitScript(()=>{window.__LINXI_SIGNAL_SERVER__={host:'127.0.0.1',port:4199,path:'/',secure:false};});
