@@ -1,5 +1,6 @@
+import { REMATCH_ACTIONS, applyRematch } from '../../shared/rematch.js';
 import { initialBoard, legalMoves, winningLine, positionKey, moveLabel, sideName } from './rules.js';
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 export const UNDO_TIMEOUT_MS = 30000;
 export function undoCount(state, actor) {
   if (![1, -1].includes(actor)) return 0;
@@ -12,16 +13,18 @@ export function createGame(settings = {}, id = 'local', phase = 'playing') {
   if (!Number.isInteger(hints) || hints < 0 || hints > 10 || ![3, 5, 10, 20, 30].includes(seconds)) throw Error('对局设置无效');
   if (!['lobby', 'playing'].includes(phase) || typeof id !== 'string' || id.length > 80) throw Error('对局信息无效');
   const board = initialBoard();
-  return { id, settings: { hints, seconds }, initialPhase: phase, phase, board, turn: 1, used: { 1: 0, '-1': 0 }, moves: [], events: [], positions: [positionKey(board, 1)], result: null, winning: [], drawOffer: null, undoRequest: null, lastHint: null, revision: 0 };
+  return { id, settings: { hints, seconds }, initialPhase: phase, phase, board, turn: 1, used: { 1: 0, '-1': 0 }, moves: [], events: [], positions: [positionKey(board, 1)], result: null, winning: [], drawOffer: null, rematchOffer: null, rematchAccepted: false, undoRequest: null, lastHint: null, revision: 0 };
 }
 export function transition(state, action, actor) {
   if (![1, -1].includes(actor) || !action || typeof action.type !== 'string') throw Error('操作无效');
   if (state.events.length >= 2000) throw Error('对局记录已达上限，请导出棋谱');
-  if (state.result) throw Error('对局已经结束');
+  if (state.result && !REMATCH_ACTIONS.includes(action.type)) throw Error('对局已经结束');
   if (state.phase === 'lobby' && action.type !== 'ready') throw Error('等待双方确认规则');
   if (state.undoRequest && !['acceptUndo', 'rejectUndo', 'cancelUndo'].includes(action.type)) throw Error('请先处理悔棋请求');
   const next = structuredClone(state), a = { type: action.type };
-  if (a.type === 'requestUndo') {
+  if (REMATCH_ACTIONS.includes(a.type)) {
+    applyRematch(state, action, actor, next, a);
+  } else if (a.type === 'requestUndo') {
     if (state.events.length >= 1999) throw Error('对局记录不足以完成悔棋，请导出棋谱');
     if (state.drawOffer) throw Error('请先处理和棋请求');
     const count = undoCount(state, actor);
@@ -88,7 +91,7 @@ export function transition(state, action, actor) {
 }
 export const packGame = state => ({ kind: 'gomoku', protocol: PROTOCOL, id: state.id, settings: state.settings, phase: state.initialPhase, events: state.events });
 export function unpackGame(data) {
-  if (!data || data.kind !== 'gomoku' || data.protocol !== PROTOCOL || !Array.isArray(data.events) || data.events.length > 2000) throw Error('棋谱版本或格式无效');
+  if (!data || data.kind !== 'gomoku' || ![1, PROTOCOL].includes(data.protocol) || !Array.isArray(data.events) || data.events.length > 2000) throw Error('棋谱版本或格式无效');
   let state = createGame(data.settings, data.id, data.phase);
   for (const e of data.events) state = transition(state, e.action, e.actor);
   return state;

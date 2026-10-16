@@ -14,12 +14,14 @@
     "serve:test": "node scripts/serve.mjs"
   },
   "devDependencies": {
-    "vitepress": "^1.6.3",
+    "@playwright/test": "1.56.1",
     "esbuild": "0.25.12",
-    "@playwright/test": "1.56.1"
+    "peer": "1.0.2",
+    "vitepress": "^1.6.3"
   },
   "dependencies": {
-    "qrcode-generator": "1.4.4",
-    "jsqr": "1.4.0"
+    "jsqr": "1.4.0",
+    "peerjs": "1.5.5",
+    "qrcode-generator": "1.4.4"
   }
 }

@@ -10,5 +10,8 @@ export default defineConfig({
     launchOptions: process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {},
     screenshot: 'only-on-failure'
   },
-  webServer: { command: 'pnpm serve:test', url: 'http://127.0.0.1:4173', reuseExistingServer: true }
+  webServer: [
+    { command: 'pnpm serve:test', url: 'http://127.0.0.1:4173', reuseExistingServer: !process.env.CI },
+    { command: 'node scripts/serve-test-signaling.mjs', url: 'http://127.0.0.1:4174/', reuseExistingServer: !process.env.CI }
+  ]
 });

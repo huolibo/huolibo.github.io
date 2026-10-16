@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { mkdir, cp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { resolve, dirname } from 'node:path';
 const require = createRequire(import.meta.url);
@@ -24,6 +25,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.\n`;
 
+const licenses = Object.values(JSON.parse(execFileSync('pnpm', ['licenses', 'list', '--prod', '--json'], { encoding: 'utf8' }))).flat();
+let peerNotices = '';
+for (const dependency of licenses.filter(x => !['qrcode-generator', 'jsqr'].includes(x.name)).sort((a,b) => a.name.localeCompare(b.name))) {
+  const directory = dependency.paths[0], names = await readdir(directory);
+  const license = names.find(name => /^licen[sc]e(?:\.|$)/i.test(name));
+  if (!license) throw Error(`Missing license for ${dependency.name}`);
+  peerNotices += `\n${dependency.name} ${dependency.versions.join(',')} (${dependency.license})\n` + await readFile(resolve(directory, license), 'utf8') + '\n';
+}
 const notices = 'qrcode-generator 1.4.4\n' + qrLicense + mit + '\njsQR 1.4.0\n' + await readFile(resolve(dirname(require.resolve('jsqr/package.json')), 'LICENSE'), 'utf8');
 for (const kind of ['xiangqi', 'gomoku']) {
   const source = `board-games/${kind}`, dest = `public/${kind}`;
@@ -34,7 +43,7 @@ for (const kind of ['xiangqi', 'gomoku']) {
   await build({ entryPoints: { app: `${source}/src/app.js`, 'ai-worker': `${source}/src/ai-worker.js` },
     alias: { '@game/rules': resolve(`${source}/src/rules.js`), '@game/state': resolve(`${source}/src/game.js`), '@game/config': resolve(`${source}/src/config.js`) },
     bundle: true, outdir: dest, format: 'esm', target: ['safari16.4', 'chrome110'], minify: true, legalComments: 'eof' });
-  await writeFile(`${dest}/THIRD_PARTY_NOTICES.txt`, notices);
+  await writeFile(`${dest}/THIRD_PARTY_NOTICES.txt`, notices + peerNotices);
   const assets = (await readdir(dest)).filter(f => f !== 'sw.js').sort(), hash = createHash('sha256');
   for (const f of assets) hash.update(await readFile(`${dest}/${f}`));
   const revision = hash.digest('hex').slice(0, 12);

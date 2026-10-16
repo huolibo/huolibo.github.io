@@ -3,6 +3,9 @@ import qrcode from 'qrcode-generator';
 import jsQR from 'jsqr';
 import { names, sideName, legalMoves, inCheck, moveLabel } from '@game/rules';
 import { createGame, transition, packGame, unpackGame, acceptSnapshot, undoCount, PROTOCOL, UNDO_TIMEOUT_MS } from '@game/state';
+import { QuickPeerLink } from './quick-peer.js';
+import { encodeQuickSignal, decodeQuickSignal, quickInviteURL } from './quick-code.js';
+import { REMATCH_ACTIONS, validateRematch } from './rematch.js';
 import { PeerLink, decodeSignal } from './peer.js';
 
 const $ = id => document.getElementById(id);
@@ -21,7 +24,7 @@ let worker = null, analysis = null, suggestion = null, aiTimer = null, aiTicker 
 let cameraStream = null, scanFrame = null, cameraStarting = false, cameraGeneration = 0;
 let signalParts = [], signalPage = 0, scanParts = new Map(), scanGroup = null;
 let connectionState = '未连接', log = [], toastTimer;
-let confirmation = null, undoTicker = null, guestUndoDeadline = 0, undoPreviewRevision = null;
+let confirmation = null, undoTicker = null, guestUndoDeadline = 0, undoPreviewRevision = null, guestRematchDeadline = 0;
 const uid = () => crypto.randomUUID();
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 5000); }
 function note(message) { log.push(`${new Date().toLocaleTimeString('zh-CN')} ${message}`); log = log.slice(-12); renderDiagnostics(); }
@@ -71,25 +74,55 @@ function statusText() {
 }
 // The red peer timestamps decisions. Guest wall clocks never decide acceptance.
 function stampUndo(action, authoritative) {
-  if (!['requestUndo', 'acceptUndo', 'rejectUndo', 'cancelUndo'].includes(action?.type)) return action;
-  const at = authoritative ? Math.max(Date.now(), game.undoRequest?.createdAt || 0) : game.undoRequest?.createdAt ?? Date.now();
+  if (![...REMATCH_ACTIONS, 'requestUndo', 'acceptUndo', 'rejectUndo', 'cancelUndo'].includes(action?.type)) return action;
+  const request = game.undoRequest || game.rematchOffer;
+  const at = authoritative ? Math.max(Date.now(), request?.createdAt || 0) : request?.createdAt ?? Date.now();
   return { ...action, at };
 }
 function cancelDisconnectedUndo() {
-  if (!game.undoRequest || (mode === 'network' && role !== 1)) return;
-  game = transition(game, stampUndo({ type: 'cancelUndo', requestId: game.undoRequest.id, reason: 'disconnect' }, true), 1);
-  persist(); syncUndoTimer();
+  if (mode === 'network' && role !== 1) return;
+  let changed = false;
+  for (const [field, type] of [['undoRequest', 'cancelUndo'], ['rematchOffer', 'cancelRematch']]) {
+    if (game[field]) { game = transition(game, stampUndo({ type, requestId: game[field].id, reason: 'disconnect' }, true), 1); changed = true; }
+  }
+  if (changed) { persist(); syncUndoTimer(); }
 }
 function expireUndoIfDue() {
-  const request = game.undoRequest;
-  if (!request || (mode === 'network' && role !== 1) || Date.now() < request.expiresAt) return;
-  commit(transition(game, { type: 'cancelUndo', requestId: request.id, reason: 'timeout', at: Date.now() }, 1));
-  if (mode === 'network' && connected) sendSnapshot();
-  toast('悔棋请求已超时，棋局保持不变');
+  if (mode === 'network' && role !== 1) return;
+  for (const [field, type] of [['undoRequest', 'cancelUndo'], ['rematchOffer', 'cancelRematch']]) {
+    const request = game[field];
+    if (!request || Date.now() < request.expiresAt) continue;
+    commit(transition(game, { type, requestId: request.id, reason: 'timeout', at: Date.now() }, 1));
+    if (mode === 'network' && connected) sendSnapshot();
+    toast(type === 'cancelUndo' ? '悔棋请求已超时，棋局保持不变' : '再来一局的邀请已超时');
+  }
 }
 function syncUndoTimer() {
   clearInterval(undoTicker); undoTicker = null;
-  if (game.undoRequest) undoTicker = setInterval(() => { expireUndoIfDue(); renderUndo(); }, 250);
+  if (game.undoRequest || game.rematchOffer) undoTicker = setInterval(() => { expireUndoIfDue(); renderUndo(); renderRematch(); }, 250);
+}
+function renderRematch() {
+  $('result-panel').hidden = !game.result;
+  if (!game.result) return;
+  $('result-title').textContent = `${game.result.winner ? sideName(game.result.winner) + '胜' : '和棋'} · ${game.result.reason}`;
+  const online = mode === 'local' || connected, offer = game.rematchOffer;
+  $('rematch-button').disabled = !online || !!pending || !!offer || !!game.rematchAccepted;
+  $('rematch-panel').hidden = !offer;
+  if (!offer) return;
+  const remaining = mode === 'network' && role === -1 ? guestRematchDeadline - performance.now() : offer.expiresAt - Date.now();
+  const seconds = Math.max(0, Math.ceil(remaining / 1000));
+  $('rematch-text').textContent = `${sideName(offer.side)}邀请再来一局，${seconds ? '剩余 ' + seconds + ' 秒' : '等待超时取消同步'}。`;
+  const canRespond = online && !pending && seconds > 0 && role === -offer.side;
+  $('accept-rematch').disabled = !canRespond; $('reject-rematch').disabled = !canRespond;
+  $('withdraw-rematch').hidden = role !== offer.side; $('withdraw-rematch').disabled = !online || !!pending;
+}
+function startRematch(request = null) {
+  if (role !== 1 || !connected || !game.rematchAccepted) return;
+  const previous = packGame(game), next = createGame(game.settings, uid(), 'playing');
+  try {
+    link.send({ type: 'rematch-start', previous, game: packGame(next), request });
+    commit(next); toast('新局开始，AI 次数已重置');
+  } catch (e) { connected = false; render(); toast('新局同步中断，请重连后继续'); }
 }
 function renderUndo() {
   const request = game.undoRequest;
@@ -183,6 +216,7 @@ function renderGomoku() {
     if (suggestion?.ply === game.moves.length && suggestion.move.to === i) cell.classList.add('suggested');
     cell.onclick = () => clickSquare(i); board.append(cell);
   }
+  $('place-button').hidden = !!game.result;
   $('place-button').disabled = !myTurn() || selected === null || !!game.board[selected];
 }
 function renderPlayers() {
@@ -239,7 +273,7 @@ function render() {
   $('mode-label').textContent = mode === 'local' ? '同机对弈' : connected ? '附近联机 · 已连接' : '附近联机 · 待连接';
   $('seat-label').textContent = mode === 'local' ? '两人轮流操作' : `你执${sideName(role).slice(0, 1)}`;
   $('game-status').textContent = statusText();
-  renderBoard(); renderPlayers(); renderMoves(); renderAI(); renderUndo();
+  renderBoard(); renderPlayers(); renderMoves(); renderAI(); renderUndo(); renderRematch();
   $('ready-panel').hidden = game.phase !== 'lobby' || !connected;
   $('ready-text').textContent = `每人 AI ${game.settings.hints} 次，每次最多 ${game.settings.seconds} 秒；${config.rules}。${role === 1 ? '等待后手方确认。' : '确认后先手方先行。'}`;
   $('ready-button').hidden = role === 1; $('ready-button').disabled = !!pending;
@@ -252,8 +286,10 @@ function render() {
   $('connection-description').textContent = mode === 'local' ? '同一 Wi-Fi 或手机热点，互扫连接码即可尝试联机。' : connected ? '棋步直接传给对方；AI 在本机分析。保持页面在前台。' : '重新交换连接码可以恢复原局。请勿新开一局覆盖存档。';
 }
 function commit(next) {
+  const justEnded = !!next.result && !game.result;
   if (next.moves.length !== game.moves.length || next.result || next.undoRequest) { cancelAnalysis(); suggestion = null; selected = null; }
   game = next; persist(); syncUndoTimer(); render();
+  if (justEnded && !document.querySelector('dialog[open]')) $('result-panel').scrollIntoView({ block: 'nearest' });
 }
 function act(action, actor = actorSide()) {
   try {
@@ -271,7 +307,8 @@ function act(action, actor = actorSide()) {
       render(); return;
     }
     commit(next);
-    if (mode === 'network') sendSnapshot();
+    if (mode === 'network' && action.type === 'acceptRematch') startRematch();
+    else if (mode === 'network') sendSnapshot();
     if (action.type === 'hint') startAnalysis();
   } catch (e) { toast(e.message); }
 }
@@ -285,8 +322,11 @@ function receive(message) {
     if (role === 1 && message.type === 'action') {
       expireUndoIfDue();
       if (message.id !== game.id || message.base !== game.revision || typeof message.request !== 'string') { link.send({ type: 'error', message: '棋局版本不同，已重新同步', request: message.request }); sendSnapshot(); return; }
-      try { commit(transition(game, stampUndo(message.action, true), -1)); sendSnapshot(message.request); }
+      try { commit(transition(game, stampUndo(message.action, true), -1)); if (message.action.type === 'acceptRematch') startRematch(message.request); else sendSnapshot(message.request); }
       catch (e) { link.send({ type: 'error', message: e.message, request: message.request }); }
+    } else if (role === -1 && message.type === 'rematch-start') {
+      const next = validateRematch(game, message.previous, message.game, acceptSnapshot, unpackGame);
+      clearPending(); commit(next); toast('新局开始，AI 次数已重置');
     } else if (role === -1 && message.type === 'snapshot') {
       const next = acceptSnapshot(game, message.game);
       const wasHint = pending?.id === message.request && pending.action.type === 'hint';
@@ -294,6 +334,10 @@ function receive(message) {
       if (next.undoRequest && next.undoRequest.id !== game.undoRequest?.id) {
         const remaining = next.undoRequest.expiresAt - (Number.isSafeInteger(message.hostTime) ? message.hostTime : next.undoRequest.createdAt);
         guestUndoDeadline = performance.now() + Math.max(0, Math.min(UNDO_TIMEOUT_MS, remaining));
+      }
+      if (next.rematchOffer && next.rematchOffer.id !== game.rematchOffer?.id) {
+        const remaining = next.rematchOffer.expiresAt - (Number.isSafeInteger(message.hostTime) ? message.hostTime : next.rematchOffer.createdAt);
+        guestRematchDeadline = performance.now() + Math.max(0, Math.min(30000, remaining));
       }
       connected = true; commit(next);
       $('connect-status').textContent = game.phase === 'lobby' ? '连接成功！请关闭此面板，确认双方规则后开始。' : '棋谱核验通过，可以继续对局。';
@@ -306,12 +350,14 @@ function receive(message) {
     connected = false; link?.close(); clearPending(); cancelDisconnectedUndo(); render(); note(e.message); toast(`同步已暂停：${e.message}`);
   }
 }
-function newLink() {
+function newLink(method = 'manual') {
   signalParts = []; $('out-code').value = ''; $('signal-output').hidden = true;
   cancelDisconnectedUndo();
   link?.close(); connected = false; clearPending();
-  const nextLink = new PeerLink({
+  const LinkClass = method === 'quick' ? QuickPeerLink : PeerLink;
+  const nextLink = new LinkClass({
     onMessage: receive,
+    onError: message => { $('connect-status').textContent = message; toast(message); },
     onStatus: status => {
       connectionState = status; note(`连接状态：${status}`);
       if (['disconnected', 'failed', 'closed', 'timeout', 'invalid'].includes(status)) {
@@ -321,9 +367,11 @@ function newLink() {
     },
     onOpen: () => {
       connected = true;
-      if (role === 1) sendSnapshot();
+      if (role === 1) { if (game.rematchAccepted) startRematch(); else sendSnapshot(); }
       $('connect-status').textContent = '连接成功！可以关闭此面板，确认规则后开始。';
-      stopCamera(); render(); toast('对方已连接');
+      stopCamera();
+      if (method === 'quick') $('connect-dialog').close();
+      render(); toast('对方已连接');
     }
   });
   link = nextLink; return nextLink;
@@ -334,7 +382,7 @@ async function createOffer() {
   try {
     cancelAnalysis(); suggestion = null; role = 1; mode = 'network'; persist();
     const current = newLink(); render(); $('connect-status').textContent = '正在准备先手方连接码…';
-    const code = await current.offer({ id: game.id, settings: game.settings, protocol: PROTOCOL, gameType: config.kind });
+    const code = await current.offer({ id: game.id, settings: game.settings, protocol: PROTOCOL, gameType: config.kind, phase: game.initialPhase });
     if (link !== current) return;
     showSignal(code); $('signal-input').hidden = false; $('in-code').value = ''; $('input-label').textContent = '第二步：读取后手方生成的回应码';
     $('connect-status').textContent = '第一步：请后手方扫描此码。对方生成回应码后，再用下方相机扫描回应码。';
@@ -342,10 +390,41 @@ async function createOffer() {
   } catch (e) { $('connect-status').textContent = e.message; toast(e.message); }
   finally { signalBusy = false; $('create-room').disabled = false; $('join-room').disabled = false; }
 }
+async function createQuickInvite() {
+  if (signalBusy) return;
+  signalBusy = true; $('quick-create').disabled = true; $('quick-join').disabled = true;
+  let current;
+  try {
+    cancelAnalysis(); suggestion = null; role = 1; mode = 'network'; persist();
+    current = newLink('quick'); render(); $('connect-status').textContent = '正在连接快捷配对服务，请保持联网…';
+    const data = await current.host({ v: 1, id: game.id, settings: game.settings, protocol: PROTOCOL, gameType: config.kind,
+      phase: game.initialPhase, secret: uid() });
+    if (link !== current) return;
+    showSignal(quickInviteURL(encodeQuickSignal(data), location.href)); $('signal-input').hidden = true;
+    $('connect-status').textContent = '请对方扫描这一张二维码或打开复制的邀请链接。无需回传回应码；连接后会自动进入棋盘。';
+  } catch (e) {
+    if (current && link === current) { current.close(); connected = false; render(); }
+    $('connect-status').textContent = e.message; toast(e.message);
+  } finally { signalBusy = false; $('quick-create').disabled = false; $('quick-join').disabled = false; }
+}
+async function joinQuickInvite(data) {
+  if (data.gameType !== config.kind) throw Error('连接码属于另一种棋，请打开相同的游戏');
+  if (data.protocol !== PROTOCOL) throw Error('双方程序版本不同，请更新到同一版本后重新配对');
+  if ((game.id !== data.id && game.moves.length || connected) && !await confirmAction('加入快捷对局？', '这会替换当前连接或棋局。需要保留时，请先取消并导出棋谱。')) return;
+  cancelAnalysis(); suggestion = null;
+  if (game.id !== data.id) game = createGame(data.settings, data.id, data.phase);
+  else if (JSON.stringify(game.settings) !== JSON.stringify(data.settings) || game.initialPhase !== data.phase) throw Error('重连规则与原局不同');
+  mode = 'network'; role = -1; flipped = true; selected = null;
+  const current = newLink('quick'); persist(); render();
+  $('signal-input').hidden = true; $('connect-status').textContent = '正在自动交换连接信息，无需回传二维码…';
+  await current.join(data);
+}
 async function readSignal() {
   if (signalBusy) return;
   signalBusy = true; $('import-signal').disabled = true;
   try {
+    const quick = decodeQuickSignal($('in-code').value);
+    if (quick) { await joinQuickInvite(quick); return; }
     const data = await decodeSignal($('in-code').value);
     if ((data.gameType || 'xiangqi') !== config.kind) throw Error('连接码属于另一种棋，请打开相同的游戏');
     if (data.protocol !== PROTOCOL) throw Error('双方程序版本不同，请更新到同一版本后重新配对');
@@ -356,7 +435,7 @@ async function readSignal() {
       if (mode === 'network' && role === 1 && link) throw Error('创建方需要读取回应码。若要改为加入方，请先点击“加入对局”。');
       if (game.id !== data.id && game.moves.length && !await confirmAction('加入新的对局？', '这会替换本机当前棋局。需要保留时，请先取消并导出棋谱。')) return;
       cancelAnalysis(); suggestion = null;
-      if (game.id !== data.id) game = createGame(data.settings, data.id, 'lobby');
+      if (game.id !== data.id) game = createGame(data.settings, data.id, data.phase || 'lobby');
       else if (JSON.stringify(game.settings) !== JSON.stringify(data.settings)) throw Error('重连规则与原局不同');
       mode = 'network'; role = -1; flipped = true; selected = null;
       const current = newLink(); persist(); render();
@@ -382,7 +461,7 @@ function renderQR() {
   $('qr-prev').disabled = signalPage === 0; $('qr-next').disabled = signalPage === signalParts.length - 1;
 }
 function ingestQR(text) {
-  if (text.startsWith('LX1.')) return text;
+  if (text.startsWith('LX1.') || text.startsWith('LXQ1.') || /^https?:\/\/[^\s]+#join=/.test(text)) return text;
   const match = /^LXP1\.([\w-]{8})\.(\d+)\.(\d+)\.(.+)$/.exec(text);
   if (!match) return null;
   const [, group, page, total, chunk] = match, n = Number(page), count = Number(total);
@@ -424,7 +503,7 @@ async function startCamera() {
 }
 function stopCamera() { cameraGeneration++; cameraStream?.getTracks().forEach(t => t.stop()); cameraStream = null; cancelAnimationFrame(scanFrame); $('camera').srcObject = null; $('camera-panel').hidden = true; }
 function renderDiagnostics() {
-  $('diagnostics').textContent = `安全环境：${isSecureContext ? '是' : '否'}\nWebRTC：${globalThis.RTCPeerConnection ? '可用' : '不可用'}\n相机 API：${navigator.mediaDevices?.getUserMedia ? '可用' : '不可用'}\n连接码压缩：${globalThis.CompressionStream ? '可用' : '不可用'}\n通道状态：${link?.channel?.readyState || '未创建'}\nICE 状态：${link?.pc?.iceConnectionState || '未创建'}\n连接状态：${connectionState}\n模式：仅局域网，无公网中继\n\n${log.join('\n')}`;
+  $('diagnostics').textContent = `安全环境：${isSecureContext ? '是' : '否'}\nWebRTC：${globalThis.RTCPeerConnection ? '可用' : '不可用'}\n相机 API：${navigator.mediaDevices?.getUserMedia ? '可用' : '不可用'}\n连接码压缩：${globalThis.CompressionStream ? '可用' : '不可用'}\n通道状态：${link?.channel?.readyState || '未创建'}\nICE 状态：${link?.pc?.iceConnectionState || '未创建'}\n连接状态：${connectionState}\n模式：${link?.transport === 'quick' ? '联网快捷配对，棋步直连' : '离线互扫，棋步直连'}\n\n${log.join('\n')}`;
 }
 function cancelAnalysis() { worker?.terminate(); worker = null; clearTimeout(aiTimer); clearInterval(aiTicker); analysis = null; }
 function finishAnalysis(reason) {
@@ -456,7 +535,7 @@ function startAnalysis() {
   } catch { finishAnalysis('浏览器无法启动引擎，返回合法候选'); }
   renderAI();
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) { finishAnalysis('页面进入后台，已结束搜索并保留建议'); stopCamera(); persist(); } else { expireUndoIfDue(); renderUndo(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { finishAnalysis('页面进入后台，已结束搜索并保留建议'); stopCamera(); persist(); } else { expireUndoIfDue(); renderUndo(); renderRematch(); } });
 if ($('place-button')) $('place-button').onclick = () => { if (selected !== null) act({ type: 'move', from: -1, to: selected }); };
 $('hint-button').onclick = () => act({ type: 'hint' });
 $('ai-settings-button').onclick = () => {
@@ -496,13 +575,37 @@ for (const [id, type] of [['accept-undo', 'acceptUndo'], ['reject-undo', 'reject
     act({ type, requestId: request.id, ...(type === 'cancelUndo' ? { reason: 'withdraw' } : {}) }, actor);
   };
 }
+$('rematch-button').onclick = () => {
+  if (!game.result) return;
+  if (mode === 'local') { resetGame(game.settings, 'local'); toast('新局开始，AI 次数已重置'); }
+  else act({ type: 'offerRematch' }, role);
+};
+for (const [id, type] of [['accept-rematch', 'acceptRematch'], ['reject-rematch', 'rejectRematch'], ['withdraw-rematch', 'cancelRematch']]) {
+  $(id).onclick = () => {
+    if (!game.rematchOffer) return;
+    act({ type, requestId: game.rematchOffer.id, ...(type === 'cancelRematch' ? { reason: 'withdraw' } : {}) }, role);
+  };
+}
 $('resign-button').onclick = async () => { const actor = actorSide(); if (await confirmAction(`${sideName(actor)}认输？`, '认输后将结束本局，可以导出棋谱留作复盘。')) act({ type: 'resign' }, actor); };
 $('new-button').onclick = () => { $('settings-hints').value = game.settings.hints; $('settings-seconds').value = game.settings.seconds; openDialog('settings-dialog'); };
 const settings = () => ({ hints: Number($('settings-hints').value), seconds: Number($('settings-seconds').value) });
 $('start-local').onclick = () => { resetGame(settings(), 'local'); $('settings-dialog').close(); };
+$('start-quick').onclick = () => { resetGame(settings(), 'network'); $('settings-dialog').close(); openDialog('connect-dialog'); createQuickInvite(); };
 $('start-host').onclick = () => { resetGame(settings(), 'network'); $('settings-dialog').close(); openDialog('connect-dialog'); createOffer(); };
 $('connect-button').onclick = () => { renderDiagnostics(); openDialog('connect-dialog'); };
 $('connection-detail').onclick = () => openDialog('help-dialog'); $('help-button').onclick = () => openDialog('help-dialog');
+$('quick-create').onclick = async () => {
+  if (mode === 'network' && role === 1) {
+    if (connected && !await confirmAction('重新配对？', '现有连接将断开，棋局保留。创建新邀请后让对方扫描一次即可重连。')) return;
+    await createQuickInvite();
+  } else { $('connect-dialog').close(); openDialog('settings-dialog'); }
+};
+$('quick-join').onclick = async () => {
+  if (connected && !await confirmAction('加入其他对局？', '这会断开当前连接，棋局仍保存在本机。')) return;
+  disconnect(); cancelAnalysis(); $('signal-input').hidden = false; $('in-code').value = '';
+  $('input-label').textContent = '扫描或粘贴对方的快捷邀请';
+  $('connect-status').textContent = '点“打开相机扫码”扫描对方的一张二维码，或粘贴邀请链接后读取。无需生成回应码。'; render();
+};
 $('create-room').onclick = async () => {
   if (mode === 'network' && role === 1) {
     if (connected && !await confirmAction('重新配对？', '现有连接将断开，棋局保留，需要重新交换连接码。')) return;
@@ -549,3 +652,9 @@ async function offlineSetup() {
 }
 window.addEventListener('pagehide', persist);
 cancelDisconnectedUndo(); syncUndoTimer(); render(); renderDiagnostics(); offlineSetup();
+
+const initialInvite = new URLSearchParams(location.hash.slice(1)).get('join');
+if (initialInvite) {
+  history.replaceState(null, '', location.pathname + location.search);
+  openDialog('connect-dialog'); $('in-code').value = initialInvite; readSignal();
+}
