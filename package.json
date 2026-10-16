@@ -6,10 +6,20 @@
   "type": "module",
   "scripts": {
     "dev": "vitepress dev",
-    "build": "vitepress build",
-    "preview": "vitepress preview"
+    "build": "pnpm build:games && vitepress build",
+    "preview": "vitepress preview",
+    "build:games": "node scripts/build-games.mjs",
+    "test": "node --test board-games/*/tests/*.test.js",
+    "test:browser": "playwright test",
+    "serve:test": "node scripts/serve.mjs"
   },
   "devDependencies": {
-    "vitepress": "^1.6.3"
+    "vitepress": "^1.6.3",
+    "esbuild": "0.25.12",
+    "@playwright/test": "1.56.1"
+  },
+  "dependencies": {
+    "qrcode-generator": "1.4.4",
+    "jsqr": "1.4.0"
   }
 }

@@ -19,4 +19,4 @@ pnpm preview
 
 ## 联系
 
-- Email：[@huolibo](huolibo@qq.com)
+- Email：[@huolibo](mailto:huolibo@qq.com)

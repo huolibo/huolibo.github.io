@@ -9,7 +9,7 @@ export default defineConfig({
   base: '/',
   cleanUrls: true,
   lastUpdated: true,
-  srcExclude: ['README.md'],
+  srcExclude: ['README.md', 'board-games/**', 'tests/**'],
 
   head: [
     ['meta', { name: 'theme-color', content: '#3c8772' }],
@@ -23,6 +23,7 @@ export default defineConfig({
       { text: '首页', link: '/' },
       { text: '笔记', link: '/notes/' },
       { text: '有趣的链接', link: '/links/' },
+      { text: '棋室', link: '/games' },
       { text: '关于', link: '/about' },
     ],
 

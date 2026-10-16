@@ -24,6 +24,11 @@ features:
     details: 收藏的优质工具、文章与资源，每条都附一句话点评。
     link: /links/
     linkText: 查看收藏
+  - icon: ⚫
+    title: 临席棋室
+    details: 中国象棋与五子棋，同机对弈、附近联机，落子之前问问 AI。
+    link: /games
+    linkText: 进入棋室
   - icon: 🙋
     title: 关于
     details: 关于我，以及这个知识库的搭建与使用方式。
