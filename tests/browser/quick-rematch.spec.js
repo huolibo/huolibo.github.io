@@ -18,9 +18,10 @@ async function quickPair(host, guest, kind, reuseTab = false) {
   const qr=jsQR(new Uint8ClampedArray(raw.pixels),raw.width,raw.height);
   expect(qr?.data).toBe(invite);expect(decodeQuickSignal(invite).gameType).toBe(kind);
   await expect(host.locator('#qr-pagination')).toBeHidden();
-  let timeOrigin;
+  let pageToken;
   if (reuseTab) {
-    await guest.goto(`/${kind}/`); timeOrigin = await guest.evaluate(() => performance.timeOrigin);
+    await guest.goto(`/${kind}/`);
+    pageToken = await guest.evaluate(() => window.__linxiReuseProbe = crypto.randomUUID());
     await guest.evaluate(url => { location.href = url; }, invite);
   } else await guest.goto(invite);
   for(const page of [host,guest]) {
@@ -28,7 +29,7 @@ async function quickPair(host, guest, kind, reuseTab = false) {
     await expect(page.locator('#connect-dialog')).not.toBeVisible();
   }
   await expect(guest.locator('#out-code')).toHaveValue('');
-  if (reuseTab) expect(await guest.evaluate(() => performance.timeOrigin)).toBe(timeOrigin);
+  if (reuseTab) expect(await guest.evaluate(() => window.__linxiReuseProbe)).toBe(pageToken);
   expect(new URL(guest.url()).hash).toBe('');
   await guest.locator('#ready-button').click();
   await expect(host.locator('#ready-panel')).toBeHidden();
