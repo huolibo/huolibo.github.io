@@ -52,7 +52,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm exec playwright install webkit
-      - run: pnpm exec playwright test tests/browser/quick-rematch.spec.js
+      - run: pnpm exec playwright test tests/browser/quick-rematch.spec.js tests/browser/connection-ui.spec.js
         env:
           TEST_BROWSER: webkit
 

@@ -14,18 +14,20 @@ async function enableAI(page, seconds = '3') {
   await page.locator('#ai-provider').selectOption('local'); await page.locator('#save-ai-settings').click();
 }
 async function pair(host, guest, resume = false) {
-  if (resume) { await host.locator('#connect-button').click(); await host.locator('#create-room').click(); }
+  if (resume) { await host.locator('#connect-button').click(); await host.locator('#offline-options').click(); await host.locator('#create-room').click(); }
   else { await host.locator('#new-button').click(); await host.locator('#start-host').click(); }
   await expect(host.locator('#out-code')).toHaveValue(/^LX1\./, { timeout:15000 });
   const offer = await host.locator('#out-code').inputValue();
-  await guest.locator('#connect-button').click(); await guest.locator('#join-room').click();
+  await guest.locator('#connect-button').click(); await guest.locator('#offline-options').click(); await guest.locator('#join-room').click();
+  await guest.locator('#paste-details > summary').click();
   await guest.locator('#in-code').fill(offer); await guest.locator('#import-signal').click();
   await expect(guest.locator('#out-code')).toHaveValue(/^LX1\./, { timeout:15000 });
+  await host.locator('#scan-response').click(); await host.locator('#paste-details > summary').click();
   await host.locator('#in-code').fill(await guest.locator('#out-code').inputValue());
   await host.locator('#import-signal').click();
   for (const page of [host,guest]) {
     await expect(page.locator('#mode-label')).toContainText('已连接',{timeout:20000});
-    await page.locator('#connect-dialog .close-dialog').click();
+    await page.locator('#connect-dialog .dialog-heading .close-dialog').click();
   }
   if (!resume) { await guest.locator('#ready-button').click(); await expect(host.locator('#game-status')).toContainText('黑方行棋'); }
 }
@@ -88,7 +90,8 @@ test('Xiangqi offer cannot join Gomoku or replace its saved board', async ({ bro
   await x.goto('http://127.0.0.1:4173/xiangqi/');await x.locator('#new-button').click();await x.locator('#start-host').click();
   await expect(x.locator('#out-code')).toHaveValue(/^LX1\./,{timeout:15000});
   await g.goto('http://127.0.0.1:4173/gomoku/');await place(g,112); const before=await saved(g);
-  await g.locator('#connect-button').click();await g.locator('#join-room').click();
+  await g.locator('#connect-button').click();await g.locator('#offline-options').click();await g.locator('#join-room').click();
+  await g.locator('#paste-details > summary').click();
   await g.locator('#in-code').fill(await x.locator('#out-code').inputValue());await g.locator('#import-signal').click();
   await expect(g.locator('#connect-status')).toContainText('另一种棋');expect(await saved(g)).toEqual(before);
   await expect(g.locator('.stone')).toHaveCount(1);await context.close();

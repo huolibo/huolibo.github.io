@@ -15,20 +15,22 @@ async function chooseSettings(page, hints = '3', seconds = '3') {
 }
 async function pair(host, guest, resume = false) {
   if (resume) {
-    await host.locator('#connect-button').click(); await host.locator('#create-room').click();
+    await host.locator('#connect-button').click(); await host.locator('#offline-options').click(); await host.locator('#create-room').click();
   } else {
     await chooseSettings(host, '1'); await host.locator('#start-host').click();
   }
   await expect(host.locator('#out-code')).toHaveValue(/^LX1\./, { timeout: 15000 });
   const offer = await host.locator('#out-code').inputValue();
-  await guest.locator('#connect-button').click(); await guest.locator('#join-room').click();
+  await guest.locator('#connect-button').click(); await guest.locator('#offline-options').click(); await guest.locator('#join-room').click();
+  await guest.locator('#paste-details > summary').click();
   await guest.locator('#in-code').fill(offer); await guest.locator('#import-signal').click();
   await expect(guest.locator('#out-code')).toHaveValue(/^LX1\./, { timeout: 15000 });
   const answer = await guest.locator('#out-code').inputValue();
+  await host.locator('#scan-response').click(); await host.locator('#paste-details > summary').click();
   await host.locator('#in-code').fill(answer); await host.locator('#import-signal').click();
   await expect(host.locator('#mode-label')).toContainText('已连接', { timeout: 20000 });
   await expect(guest.locator('#mode-label')).toContainText('已连接', { timeout: 20000 });
-  await host.locator('#connect-dialog .close-dialog').click(); await guest.locator('#connect-dialog .close-dialog').click();
+  await host.locator('#connect-dialog .dialog-heading .close-dialog').click(); await guest.locator('#connect-dialog .dialog-heading .close-dialog').click();
   if (!resume) { await guest.locator('#ready-button').click(); await expect(host.locator('#game-status')).toContainText('红方行棋'); }
 }
 test('mobile layout, legal moves, AI quota and restored game', async ({ page }) => {
@@ -90,7 +92,8 @@ test('two independent browsers pair, sync, enforce quotas and resume after reloa
 });
 test('desktop visual and malformed connection input', async ({ page }) => {
   await page.goto('./'); await page.screenshot({ path: 'test-results/desktop.png', fullPage: true });
-  await page.locator('#connect-button').click(); await page.locator('#join-room').click();
+  await page.locator('#connect-button').click(); await page.locator('#offline-options').click(); await page.locator('#join-room').click();
+  await page.locator('#paste-details > summary').click();
   await page.locator('#in-code').fill('invalid-code'); await page.locator('#import-signal').click();
   await expect(page.locator('#connect-status')).toContainText('不是有效');
   await expect(page.locator('.piece')).toHaveCount(32);

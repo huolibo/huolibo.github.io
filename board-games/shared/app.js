@@ -24,11 +24,35 @@ let worker = null, analysis = null, suggestion = null, aiTimer = null, aiTicker 
 let cameraStream = null, scanFrame = null, cameraStarting = false, cameraGeneration = 0;
 let signalParts = [], signalPage = 0, scanParts = new Map(), scanGroup = null;
 let connectionState = '未连接', log = [], toastTimer;
+let connectView = 'home', connectMethod = 'quick';
 let confirmation = null, undoTicker = null, guestUndoDeadline = 0, undoPreviewRevision = null, guestRematchDeadline = 0;
 const uid = () => crypto.randomUUID();
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 5000); }
 function note(message) { log.push(`${new Date().toLocaleTimeString('zh-CN')} ${message}`); log = log.slice(-12); renderDiagnostics(); }
 function openDialog(id) { if (!$(id).open) $(id).showModal(); }
+function setConnectView(view) {
+  if (view !== 'join' && view !== 'response') stopCamera();
+  connectView = view; $('connect-dialog').dataset.view = view;
+  $('connect-home').hidden = view !== 'home'; $('connect-offline').hidden = view !== 'offline';
+  $('connect-workspace').hidden = ['home', 'offline'].includes(view);
+  $('connect-back').hidden = view === 'home';
+  $('signal-output').hidden = view !== 'host' || !$('out-code').value;
+  $('signal-input').hidden = !['join', 'response'].includes(view);
+  $('scan-response').hidden = !(view === 'host' && connectMethod === 'manual' && role === 1 && $('out-code').value);
+  $('connected-summary').hidden = view !== 'connected';
+  const titles = { home: '一起开一局', offline: '离线互扫', host: connectMethod === 'quick' ? '请朋友扫码' : role === 1 ? '先让对方扫码' : '请对方扫回应码',
+    join: connectMethod === 'quick' ? '扫描邀请二维码' : '扫描创建方二维码', response: '扫描对方回应码', connecting: '正在连接对方', connected: '连接已建立' };
+  const captions = { home: '同一 Wi-Fi / 热点 · 快捷配对需联网', offline: '无需互联网，双方需要各扫一次。', host: '保持页面在前台，连接后即可开始。',
+    join: '将相机对准朋友页面中的二维码。', response: '读取朋友刚生成的回应码。', connecting: '请保持双方页面在前台。', connected: '可以继续当前棋局，无需再次扫码。' };
+  $('connect-title').textContent = titles[view]; $('connect-caption').textContent = captions[view];
+  $('paste-details').open = false; $('connection-code-details').open = false; $('connection-help').open = false;
+  $('connect-dialog').scrollTop = 0;
+}
+function connectionSettings(method) {
+  $('settings-dialog').dataset.flow = method;
+  $('settings-hints').value = game.settings.hints; $('settings-seconds').value = game.settings.seconds;
+  $('connect-dialog').close(); openDialog('settings-dialog');
+}
 function confirmAction(title, message) {
   $('confirm-title').textContent = title; $('confirm-message').textContent = message;
   openDialog('confirm-dialog');
@@ -51,7 +75,8 @@ function clearPending() { pending = null; clearTimeout(pendingTimer); }
 function disconnect() {
   cancelDisconnectedUndo();
   link?.close(); link = null; connected = false; clearPending(); stopCamera();
-  signalParts = []; $('signal-output').hidden = true; $('signal-input').hidden = true;
+  signalParts = []; $('out-code').value = ''; $('signal-output').hidden = true; $('signal-input').hidden = true;
+  setConnectView('home');
 }
 function resetGame(settings, nextMode) {
   disconnect(); cancelAnalysis(); suggestion = null; selected = null;
@@ -367,6 +392,7 @@ function newLink(method = 'manual') {
       connectionState = status; note(`连接状态：${status}`);
       if (['disconnected', 'failed', 'closed', 'timeout', 'invalid'].includes(status)) {
         connected = false; clearPending(); cancelDisconnectedUndo(); finishAnalysis('连接中断，保留已有建议');
+        if (connectView === 'connected') setConnectView('home');
         $('connect-status').textContent = '连接尚未建立或已中断。棋谱已保留；请检查 Wi-Fi，重新交换连接码。'; render();
       }
     },
@@ -374,6 +400,7 @@ function newLink(method = 'manual') {
       connected = true;
       if (role === 1) { if (game.rematchAccepted) startRematch(); else sendSnapshot(); }
       $('connect-status').textContent = '连接成功！可以关闭此面板，确认规则后开始。';
+      setConnectView('connected');
       stopCamera();
       if (method === 'quick') $('connect-dialog').close();
       render(); toast('对方已连接');
@@ -386,11 +413,12 @@ async function createOffer() {
   signalBusy = true; $('create-room').disabled = true; $('join-room').disabled = true;
   try {
     cancelAnalysis(); suggestion = null; role = 1; mode = 'network'; persist();
+    connectMethod = 'manual'; setConnectView('host');
     const current = newLink(); render(); $('connect-status').textContent = '正在准备先手方连接码…';
     const code = await current.offer({ id: game.id, settings: game.settings, protocol: PROTOCOL, gameType: config.kind, phase: game.initialPhase });
     if (link !== current) return;
-    showSignal(code); $('signal-input').hidden = false; $('in-code').value = ''; $('input-label').textContent = '第二步：读取后手方生成的回应码';
-    $('connect-status').textContent = '第一步：请后手方扫描此码。对方生成回应码后，再用下方相机扫描回应码。';
+    showSignal(code); $('in-code').value = ''; $('input-label').textContent = '粘贴后手方生成的回应码';
+    $('connect-status').textContent = '先让朋友扫描此码，再点“扫描回应码”完成连接。';
     note(`先手方连接码已生成，${code.length} 字符`);
   } catch (e) { $('connect-status').textContent = e.message; toast(e.message); }
   finally { signalBusy = false; $('create-room').disabled = false; $('join-room').disabled = false; consumeQuickInvite(); }
@@ -401,12 +429,13 @@ async function createQuickInvite() {
   let current;
   try {
     cancelAnalysis(); suggestion = null; role = 1; mode = 'network'; persist();
+    connectMethod = 'quick'; setConnectView('host');
     current = newLink('quick'); render(); $('connect-status').textContent = '正在连接快捷配对服务，请保持联网…';
     const data = await current.host({ v: 1, id: game.id, settings: game.settings, protocol: PROTOCOL, gameType: config.kind,
       phase: game.initialPhase, secret: uid() });
     if (link !== current) return;
     showSignal(quickInviteURL(encodeQuickSignal(data), location.href)); $('signal-input').hidden = true;
-    $('connect-status').textContent = '请对方扫描这一张二维码或打开复制的邀请链接。无需回传回应码；连接后会自动进入棋盘。';
+    $('connect-status').textContent = '等待朋友扫码加入，无需回传回应码。';
   } catch (e) {
     if (current && link === current) { current.close(); connected = false; render(); }
     $('connect-status').textContent = e.message; toast(e.message);
@@ -420,6 +449,7 @@ async function joinQuickInvite(data) {
   if (game.id !== data.id) game = createGame(data.settings, data.id, data.phase);
   else if (JSON.stringify(game.settings) !== JSON.stringify(data.settings) || game.initialPhase !== data.phase) throw Error('重连规则与原局不同');
   mode = 'network'; role = -1; flipped = true; selected = null;
+  connectMethod = 'quick'; setConnectView('connecting');
   const current = newLink('quick'); persist(); render();
   $('signal-input').hidden = true; $('connect-status').textContent = '正在自动交换连接信息，无需回传二维码…';
   await current.join(data);
@@ -435,7 +465,8 @@ async function readSignal() {
     if (data.protocol !== PROTOCOL) throw Error('双方程序版本不同，请更新到同一版本后重新配对');
     if (data.description.type === 'answer') {
       if (role !== 1 || !link) throw Error('请先创建先手方连接码，再读取回应码');
-      await link.accept(data, game.id); $('connect-status').textContent = '回应码已读取，正在尝试局域网直连…';
+      await link.accept(data, game.id);
+      if (!connected) { setConnectView('connecting'); $('connect-status').textContent = '回应码已读取，正在尝试局域网直连…'; }
     } else {
       if (mode === 'network' && role === 1 && link) throw Error('创建方需要读取回应码。若要改为加入方，请先点击“加入对局”。');
       if (game.id !== data.id && game.moves.length && !await confirmAction('加入新的对局？', '这会替换本机当前棋局。需要保留时，请先取消并导出棋谱。')) return;
@@ -443,11 +474,12 @@ async function readSignal() {
       if (game.id !== data.id) game = createGame(data.settings, data.id, data.phase || 'lobby');
       else if (JSON.stringify(game.settings) !== JSON.stringify(data.settings)) throw Error('重连规则与原局不同');
       mode = 'network'; role = -1; flipped = true; selected = null;
+      connectMethod = 'manual'; setConnectView('connecting');
       const current = newLink(); persist(); render();
       const code = await current.answer(data);
       if (link !== current) return;
       showSignal(code); $('signal-input').hidden = true;
-      $('connect-status').textContent = '第二步：请先手方扫描此回应码。双方连接后，再确认规则开始。';
+      $('connect-status').textContent = '请朋友扫描这个回应码，完成后确认规则开始。';
       note(`后手方回应码已生成，${code.length} 字符`);
     }
   } catch (e) { $('connect-status').textContent = `未能读取：${e.message}`; toast(e.message); }
@@ -458,6 +490,8 @@ function showSignal(code) {
   const count = Math.ceil(code.length / 900), group = uid().slice(0, 8);
   signalParts = count === 1 ? [code] : Array.from({ length: count }, (_, i) => `LXP1.${group}.${i + 1}.${count}.${code.slice(i * 900, (i + 1) * 900)}`);
   signalPage = 0; renderQR();
+  $('copy-code').textContent = connectMethod === 'quick' ? '复制邀请链接' : '复制连接码';
+  setConnectView('host');
 }
 function renderQR() {
   const qr = qrcode(0, 'M'); qr.addData(signalParts[signalPage]); qr.make();
@@ -484,7 +518,7 @@ async function startCamera() {
     if (!navigator.mediaDevices?.getUserMedia) throw Error('相机需要 HTTPS 或 localhost；也可以复制连接码');
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false });
     if (generation !== cameraGeneration || !$('connect-dialog').open) { stream.getTracks().forEach(t => t.stop()); return; }
-    cameraStream = stream; $('camera-panel').hidden = false; $('camera').srcObject = stream; await $('camera').play();
+    cameraStream = stream; $('camera-panel').hidden = false; $('scan-code').hidden = true; $('camera').srcObject = stream; await $('camera').play();
     scanParts.clear(); scanGroup = null; $('scan-status').textContent = '请对准对方页面中的二维码';
     const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
     let lastTime = 0;
@@ -503,10 +537,16 @@ async function startCamera() {
       scanFrame = requestAnimationFrame(frame);
     }
     scanFrame = requestAnimationFrame(frame);
-  } catch (e) { stopCamera(); toast(`无法打开相机：${e.message}。可改用复制连接码。`); }
+  } catch (e) {
+    // A cancelled permission prompt must not replace a newer screen's status.
+    if (generation === cameraGeneration) {
+      stopCamera(); $('connect-status').textContent = '相机暂不可用，可重新打开，或展开下方选项粘贴连接码。';
+      toast('相机暂不可用，也可以粘贴邀请链接或连接码');
+    }
+  }
   finally { cameraStarting = false; }
 }
-function stopCamera() { cameraGeneration++; cameraStream?.getTracks().forEach(t => t.stop()); cameraStream = null; cancelAnimationFrame(scanFrame); $('camera').srcObject = null; $('camera-panel').hidden = true; }
+function stopCamera() { cameraGeneration++; cameraStream?.getTracks().forEach(t => t.stop()); cameraStream = null; cancelAnimationFrame(scanFrame); $('camera').srcObject = null; $('camera-panel').hidden = true; $('scan-code').hidden = false; }
 function renderDiagnostics() {
   $('diagnostics').textContent = `联机版本：${QUICK_CONNECTION_VERSION}\n安全环境：${isSecureContext ? '是' : '否'}\n浏览器网络状态：${navigator.onLine ? '在线（不代表公共服务可达）' : '离线'}\n页面状态：${document.hidden ? '后台' : '前台'}\nWebRTC：${globalThis.RTCPeerConnection ? '可用' : '不可用'}\n相机 API：${navigator.mediaDevices?.getUserMedia ? '可用' : '不可用'}\n连接码压缩：${globalThis.CompressionStream ? '可用' : '不可用'}\n通道状态：${link?.channel?.readyState || '未创建'}\nICE 状态：${link?.pc?.iceConnectionState || '未创建'}\nICE 收集：${link?.pc?.iceGatheringState || '未创建'}\n信令状态：${link?.pc?.signalingState || '未创建'}\n连接状态：${connectionState}\n模式：${link?.transport === 'quick' ? '联网快捷配对及 STUN 探测，棋步直连' : '离线互扫，棋步直连'}\n${link?.diagnostics || ''}\n\n${log.join('\n')}`;
 }
@@ -592,41 +632,52 @@ for (const [id, type] of [['accept-rematch', 'acceptRematch'], ['reject-rematch'
   };
 }
 $('resign-button').onclick = async () => { const actor = actorSide(); if (await confirmAction(`${sideName(actor)}认输？`, '认输后将结束本局，可以导出棋谱留作复盘。')) act({ type: 'resign' }, actor); };
-$('new-button').onclick = () => { $('settings-hints').value = game.settings.hints; $('settings-seconds').value = game.settings.seconds; openDialog('settings-dialog'); };
+$('new-button').onclick = () => { delete $('settings-dialog').dataset.flow; $('settings-hints').value = game.settings.hints; $('settings-seconds').value = game.settings.seconds; openDialog('settings-dialog'); };
 const settings = () => ({ hints: Number($('settings-hints').value), seconds: Number($('settings-seconds').value) });
 $('start-local').onclick = () => { resetGame(settings(), 'local'); $('settings-dialog').close(); };
 $('start-quick').onclick = () => { resetGame(settings(), 'network'); $('settings-dialog').close(); openDialog('connect-dialog'); createQuickInvite(); };
 $('start-host').onclick = () => { resetGame(settings(), 'network'); $('settings-dialog').close(); openDialog('connect-dialog'); createOffer(); };
-$('connect-button').onclick = () => { renderDiagnostics(); openDialog('connect-dialog'); };
+$('connect-button').onclick = () => { if (connected) setConnectView('connected'); else if (!link) setConnectView('home'); renderDiagnostics(); openDialog('connect-dialog'); };
+$('connect-back').onclick = () => {
+  if (connectView === 'response') { setConnectView('host'); return; }
+  if (!connected) disconnect();
+  setConnectView('home');
+};
+$('offline-options').onclick = () => setConnectView('offline');
 $('connection-detail').onclick = () => openDialog('help-dialog'); $('help-button').onclick = () => openDialog('help-dialog');
 $('quick-create').onclick = async () => {
   if (mode === 'network' && role === 1) {
     if (connected && !await confirmAction('重新配对？', '现有连接将断开，棋局保留。创建新邀请后让对方扫描一次即可重连。')) return;
     await createQuickInvite();
-  } else { $('connect-dialog').close(); openDialog('settings-dialog'); }
+  } else connectionSettings('quick');
 };
 $('quick-join').onclick = async () => {
   if (connected && !await confirmAction('加入其他对局？', '这会断开当前连接，棋局仍保存在本机。')) return;
   disconnect(); cancelAnalysis(); $('signal-input').hidden = false; $('in-code').value = '';
-  $('input-label').textContent = '扫描或粘贴对方的快捷邀请';
-  $('connect-status').textContent = '点“打开相机扫码”扫描对方的一张二维码，或粘贴邀请链接后读取。无需生成回应码。'; render();
+  connectMethod = 'quick'; setConnectView('join');
+  $('input-label').textContent = '粘贴对方的快捷邀请链接';
+  $('connect-status').textContent = '扫描朋友的邀请，连接后自动进入棋盘。'; render(); startCamera();
 };
 $('create-room').onclick = async () => {
   if (mode === 'network' && role === 1) {
     if (connected && !await confirmAction('重新配对？', '现有连接将断开，棋局保留，需要重新交换连接码。')) return;
     await createOffer();
-  } else { $('connect-dialog').close(); openDialog('settings-dialog'); }
+  } else connectionSettings('manual');
 };
 $('join-room').onclick = async () => {
   if (connected && !await confirmAction('重新连接？', '这会断开当前连接，棋局仍保存在本机。')) return;
   disconnect(); cancelAnalysis(); $('signal-input').hidden = false; $('in-code').value = '';
+  connectMethod = 'manual'; setConnectView('join');
   $('input-label').textContent = '第一步：读取先手方生成的连接码';
-  $('connect-status').textContent = '请扫描或粘贴先手方的连接码。读取成功后会生成回应码。'; render();
+  $('connect-status').textContent = '读取创建方二维码后，会自动生成回应码。'; render(); startCamera();
+};
+$('scan-response').onclick = () => {
+  setConnectView('response'); $('connect-status').textContent = '扫描朋友刚生成的回应码，完成双方连接。'; startCamera();
 };
 $('import-signal').onclick = readSignal; $('scan-code').onclick = startCamera; $('stop-camera').onclick = stopCamera;
 $('qr-prev').onclick = () => { if (signalPage > 0) { signalPage--; renderQR(); } };
 $('qr-next').onclick = () => { if (signalPage < signalParts.length - 1) { signalPage++; renderQR(); } };
-$('copy-code').onclick = async () => { try { await navigator.clipboard.writeText($('out-code').value); toast('连接码已复制'); } catch { $('out-code').select(); toast('请长按输入框，手动复制完整连接码'); } };
+$('copy-code').onclick = async () => { try { await navigator.clipboard.writeText($('out-code').value); toast('连接码已复制'); } catch { $('connection-code-details').open = true; $('out-code').select(); toast('请长按输入框，手动复制完整连接码'); } };
 $('copy-diagnostics').onclick = async () => {
   renderDiagnostics();
   try { await navigator.clipboard.writeText($('diagnostics').textContent); toast('诊断信息已复制'); }
