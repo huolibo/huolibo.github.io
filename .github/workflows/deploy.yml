@@ -39,11 +39,28 @@ jobs:
         with:
           path: .vitepress/dist
 
+  webkit:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install webkit
+      - run: pnpm exec playwright test tests/browser/quick-rematch.spec.js
+        env:
+          TEST_BROWSER: webkit
+
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
+    needs: [build, webkit]
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to GitHub Pages

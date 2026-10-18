@@ -21,6 +21,13 @@
 
 ## 一次扫码配对补充（2026-10-17）
 
-[PeerJS 官方 API](https://peerjs.com/client/api/peer)提供 PeerServer Cloud 默认配对、DataConnection 和 `peer.disconnect()`；后者明确保留已建立的数据通道。因此快捷方式用公共服务交换 SDP/候选信息，双方 DataChannel 打开后立即断开服务。不开启 STUN/TURN，仍限可直连的局域网。邀请中的随机凭证放在链接 fragment，后手的 metadata 必须与当前邀请一致；邀请只接入一位对手。离线互扫仍使用原生 WebRTC。
+[PeerJS 官方 API](https://peerjs.com/client/api/peer)提供 PeerServer Cloud 默认配对、DataConnection 和 `peer.disconnect()`；后者明确保留已建立的数据通道。因此快捷方式用公共服务交换 SDP/候选信息，双方 DataChannel 打开后立即断开服务。2026-10-17 初版未开启 STUN/TURN；2026-10-18 起快捷联机启用 Cloudflare 公共 STUN 辅助发现地址，仍没有 TURN 中继。邀请中的随机凭证放在链接 fragment，后手的 metadata 必须与当前邀请一致；邀请只接入一位对手。离线互扫仍使用原生 WebRTC。
 
 为避免公共服务波动影响 CI，自动化使用官方 [PeerServer](https://github.com/peers/peerjs-server)在本机模拟配对，仍使用真实浏览器 WebRTC 通道。公共服务另做实际验证。
+
+
+## Safari 快捷连接核查（2026-10-18）
+
+- [Cloudflare 官方 FAQ](https://developers.cloudflare.com/realtime/turn/faq/)明确公共 STUN 免费；仅用于快捷方式的地址发现，不承载棋步，不给离线互扫添加外部依赖。
+- [WebKit 的历史 ICE 策略说明](https://webkit.org/blog/7763/a-closer-look-into-webrtc/)与[后续 mDNS 实现记录](https://bugs.webkit.org/show_bug.cgi?id=174500)说明不能把较早的“必须开相机才能有 host candidate”规则直接当作当前所有 Safari 的行为。本次没有为了配对自动请求相机或麦克风。
+- 本机 WebKit 原版快捷连接也能通过，因此未把用户报告归因为某一个已证实的 Safari 底层缺陷。代码中确实只在首次加载时处理邀请，缺少 hashchange 处理；已补齐已有标签页接收邀请并加回归。增加 STUN 和脱敏诊断，用实际连接阶段继续定位跨手机故障。

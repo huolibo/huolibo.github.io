@@ -3,7 +3,7 @@ import qrcode from 'qrcode-generator';
 import jsQR from 'jsqr';
 import { names, sideName, legalMoves, inCheck, moveLabel } from '@game/rules';
 import { createGame, transition, packGame, unpackGame, acceptSnapshot, undoCount, PROTOCOL, UNDO_TIMEOUT_MS } from '@game/state';
-import { QuickPeerLink } from './quick-peer.js';
+import { QuickPeerLink, QUICK_CONNECTION_VERSION } from './quick-peer.js';
 import { encodeQuickSignal, decodeQuickSignal, quickInviteURL } from './quick-code.js';
 import { REMATCH_ACTIONS, validateRematch } from './rematch.js';
 import { PeerLink, decodeSignal } from './peer.js';
@@ -357,8 +357,13 @@ function newLink(method = 'manual') {
   const LinkClass = method === 'quick' ? QuickPeerLink : PeerLink;
   const nextLink = new LinkClass({
     onMessage: receive,
-    onError: message => { $('connect-status').textContent = message; toast(message); },
+    onError: message => { if (link === nextLink) { $('connect-status').textContent = message; toast(message); renderDiagnostics(); } },
+    onProgress: message => {
+      if (link !== nextLink) return;
+      if (message) { $('connect-status').textContent = message; note(message); } else renderDiagnostics();
+    },
     onStatus: status => {
+      if (link !== nextLink) return;
       connectionState = status; note(`连接状态：${status}`);
       if (['disconnected', 'failed', 'closed', 'timeout', 'invalid'].includes(status)) {
         connected = false; clearPending(); cancelDisconnectedUndo(); finishAnalysis('连接中断，保留已有建议');
@@ -388,7 +393,7 @@ async function createOffer() {
     $('connect-status').textContent = '第一步：请后手方扫描此码。对方生成回应码后，再用下方相机扫描回应码。';
     note(`先手方连接码已生成，${code.length} 字符`);
   } catch (e) { $('connect-status').textContent = e.message; toast(e.message); }
-  finally { signalBusy = false; $('create-room').disabled = false; $('join-room').disabled = false; }
+  finally { signalBusy = false; $('create-room').disabled = false; $('join-room').disabled = false; consumeQuickInvite(); }
 }
 async function createQuickInvite() {
   if (signalBusy) return;
@@ -405,7 +410,7 @@ async function createQuickInvite() {
   } catch (e) {
     if (current && link === current) { current.close(); connected = false; render(); }
     $('connect-status').textContent = e.message; toast(e.message);
-  } finally { signalBusy = false; $('quick-create').disabled = false; $('quick-join').disabled = false; }
+  } finally { signalBusy = false; $('quick-create').disabled = false; $('quick-join').disabled = false; consumeQuickInvite(); }
 }
 async function joinQuickInvite(data) {
   if (data.gameType !== config.kind) throw Error('连接码属于另一种棋，请打开相同的游戏');
@@ -446,7 +451,7 @@ async function readSignal() {
       note(`后手方回应码已生成，${code.length} 字符`);
     }
   } catch (e) { $('connect-status').textContent = `未能读取：${e.message}`; toast(e.message); }
-  finally { signalBusy = false; $('import-signal').disabled = false; renderDiagnostics(); }
+  finally { signalBusy = false; $('import-signal').disabled = false; renderDiagnostics(); consumeQuickInvite(); }
 }
 function showSignal(code) {
   $('out-code').value = code; $('signal-output').hidden = false;
@@ -503,7 +508,7 @@ async function startCamera() {
 }
 function stopCamera() { cameraGeneration++; cameraStream?.getTracks().forEach(t => t.stop()); cameraStream = null; cancelAnimationFrame(scanFrame); $('camera').srcObject = null; $('camera-panel').hidden = true; }
 function renderDiagnostics() {
-  $('diagnostics').textContent = `安全环境：${isSecureContext ? '是' : '否'}\nWebRTC：${globalThis.RTCPeerConnection ? '可用' : '不可用'}\n相机 API：${navigator.mediaDevices?.getUserMedia ? '可用' : '不可用'}\n连接码压缩：${globalThis.CompressionStream ? '可用' : '不可用'}\n通道状态：${link?.channel?.readyState || '未创建'}\nICE 状态：${link?.pc?.iceConnectionState || '未创建'}\n连接状态：${connectionState}\n模式：${link?.transport === 'quick' ? '联网快捷配对，棋步直连' : '离线互扫，棋步直连'}\n\n${log.join('\n')}`;
+  $('diagnostics').textContent = `联机版本：${QUICK_CONNECTION_VERSION}\n安全环境：${isSecureContext ? '是' : '否'}\n浏览器网络状态：${navigator.onLine ? '在线（不代表公共服务可达）' : '离线'}\n页面状态：${document.hidden ? '后台' : '前台'}\nWebRTC：${globalThis.RTCPeerConnection ? '可用' : '不可用'}\n相机 API：${navigator.mediaDevices?.getUserMedia ? '可用' : '不可用'}\n连接码压缩：${globalThis.CompressionStream ? '可用' : '不可用'}\n通道状态：${link?.channel?.readyState || '未创建'}\nICE 状态：${link?.pc?.iceConnectionState || '未创建'}\nICE 收集：${link?.pc?.iceGatheringState || '未创建'}\n信令状态：${link?.pc?.signalingState || '未创建'}\n连接状态：${connectionState}\n模式：${link?.transport === 'quick' ? '联网快捷配对及 STUN 探测，棋步直连' : '离线互扫，棋步直连'}\n${link?.diagnostics || ''}\n\n${log.join('\n')}`;
 }
 function cancelAnalysis() { worker?.terminate(); worker = null; clearTimeout(aiTimer); clearInterval(aiTicker); analysis = null; }
 function finishAnalysis(reason) {
@@ -535,7 +540,7 @@ function startAnalysis() {
   } catch { finishAnalysis('浏览器无法启动引擎，返回合法候选'); }
   renderAI();
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) { finishAnalysis('页面进入后台，已结束搜索并保留建议'); stopCamera(); persist(); } else { expireUndoIfDue(); renderUndo(); renderRematch(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { finishAnalysis('页面进入后台，已结束搜索并保留建议'); stopCamera(); persist(); } else { expireUndoIfDue(); renderUndo(); renderRematch(); } renderDiagnostics(); });
 if ($('place-button')) $('place-button').onclick = () => { if (selected !== null) act({ type: 'move', from: -1, to: selected }); };
 $('hint-button').onclick = () => act({ type: 'hint' });
 $('ai-settings-button').onclick = () => {
@@ -622,6 +627,14 @@ $('import-signal').onclick = readSignal; $('scan-code').onclick = startCamera; $
 $('qr-prev').onclick = () => { if (signalPage > 0) { signalPage--; renderQR(); } };
 $('qr-next').onclick = () => { if (signalPage < signalParts.length - 1) { signalPage++; renderQR(); } };
 $('copy-code').onclick = async () => { try { await navigator.clipboard.writeText($('out-code').value); toast('连接码已复制'); } catch { $('out-code').select(); toast('请长按输入框，手动复制完整连接码'); } };
+$('copy-diagnostics').onclick = async () => {
+  renderDiagnostics();
+  try { await navigator.clipboard.writeText($('diagnostics').textContent); toast('诊断信息已复制'); }
+  catch {
+    const range = document.createRange(); range.selectNodeContents($('diagnostics'));
+    const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); toast('已选中诊断信息，请长按复制');
+  }
+};
 $('export-button').onclick = () => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(packGame(game), null, 2)], { type: 'application/json' }));
   const a = document.createElement('a'); a.href = url; a.download = `${config.title}-${new Date().toISOString().slice(0, 10)}-${game.moves.length}手.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
@@ -653,8 +666,12 @@ async function offlineSetup() {
 window.addEventListener('pagehide', persist);
 cancelDisconnectedUndo(); syncUndoTimer(); render(); renderDiagnostics(); offlineSetup();
 
-const initialInvite = new URLSearchParams(location.hash.slice(1)).get('join');
-if (initialInvite) {
+function consumeQuickInvite() {
+  const invite = new URLSearchParams(location.hash.slice(1)).get('join');
+  if (!invite || signalBusy) return;
   history.replaceState(null, '', location.pathname + location.search);
-  openDialog('connect-dialog'); $('in-code').value = initialInvite; readSignal();
+  openDialog('connect-dialog'); $('in-code').value = invite; readSignal();
 }
+// iOS can reuse an existing Safari tab when opening a scanned invitation URL.
+window.addEventListener('hashchange', consumeQuickInvite);
+consumeQuickInvite();
